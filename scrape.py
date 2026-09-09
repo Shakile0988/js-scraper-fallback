@@ -2,7 +2,10 @@ import argparse
 import json
 import os
 import re
+import base64
+import mimetypes
 import urllib.request
+from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
 
 FILE_EXT_RE = re.compile(r"\.(pdf|xls|xlsx|csv|doc|docx)(\?.*)?$", re.IGNORECASE)
@@ -18,6 +21,14 @@ CHALLENGE_MARKERS = [
     "cf-browser-verification",
     "challenges.cloudflare.com",
     "attention required! | cloudflare",
+]
+
+# Domains n8n Cloud's server cannot reach itself (DNS/IP blocked at their end).
+# ONLY for these, this script downloads the file itself and sends it back as
+# base64. For every other county, nothing changes — fileUrl is passed to n8n
+# exactly like before and n8n fetches it on its own.
+N8N_BLOCKED_DOMAINS = [
+    "chathamcountyga.gov",
 ]
 
 # Base URL of the FlareSolverr container. Defaults to the standard local port —
@@ -51,6 +62,15 @@ window.navigator.permissions.query = (parameters) => (
 // Hide the automation-controlled hint some sites check for
 Object.defineProperty(navigator, 'webdriver', { get: () => false });
 """
+
+
+def is_blocked_domain(url):
+    """True only for domains n8n Cloud's own server can't reach."""
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return False
+    return any(blocked in host for blocked in N8N_BLOCKED_DOMAINS)
 
 
 def score_links(anchors):
@@ -146,6 +166,34 @@ def solve_with_flaresolverr(url, timeout_ms=60000):
     return html, cookies
 
 
+def download_file_as_base64(context, file_url):
+    """
+    Download the found file using the SAME Playwright browser context
+    (so any Cloudflare/challenge cookies already set are reused). Only
+    called for domains n8n Cloud itself can't reach.
+    """
+    try:
+        resp = context.request.get(file_url, timeout=45000)
+        if not resp.ok:
+            return None, None, None, f"Download HTTP {resp.status}"
+
+        body_bytes = resp.body()
+        content_type = resp.headers.get("content-type", "application/octet-stream")
+
+        cd = resp.headers.get("content-disposition", "")
+        filename = None
+        if "filename=" in cd:
+            filename = cd.split("filename=")[-1].strip('"; ')
+        if not filename:
+            ext = mimetypes.guess_extension(content_type.split(";")[0].strip()) or ".pdf"
+            filename = f"excess_funds{ext}"
+
+        b64 = base64.b64encode(body_bytes).decode("utf-8")
+        return b64, content_type, filename, None
+    except Exception as e:
+        return None, None, None, f"Download error: {e}"
+
+
 def scrape(url, timeout_ms=45000):
     result = {
         "url": url,
@@ -236,17 +284,29 @@ def scrape(url, timeout_ms=45000):
             anchors = []
             result["note"] = f"Anchor extraction error: {e}"
 
-        browser.close()
+        best, best_score = score_links(anchors)
+        if best and best_score > 0:
+            result["fileUrl"] = best[0]
+            result["linkText"] = best[1]
+            result["status"] = "file_found"
+            if not result["note"]:
+                result["note"] = f"Found via JS-rendered scrape (score {best_score})"
 
-    best, best_score = score_links(anchors)
-    if best and best_score > 0:
-        result["fileUrl"] = best[0]
-        result["linkText"] = best[1]
-        result["status"] = "file_found"
-        if not result["note"]:
-            result["note"] = f"Found via JS-rendered scrape (score {best_score})"
-    else:
-        result["note"] = result["note"] or "No matching link found after JS render"
+            # ONLY for domains n8n itself can't reach — every other county keeps
+            # working exactly as before (n8n fetches fileUrl on its own).
+            if is_blocked_domain(best[0]):
+                b64, content_type, filename, dl_err = download_file_as_base64(context, best[0])
+                if b64:
+                    result["fileBase64"] = b64
+                    result["fileContentType"] = content_type
+                    result["fileName"] = filename
+                    result["status"] = "file_downloaded"
+                else:
+                    result["note"] += f" | Blocked-domain download failed: {dl_err}"
+        else:
+            result["note"] = result["note"] or "No matching link found after JS render"
+
+        browser.close()
 
     return result
 
