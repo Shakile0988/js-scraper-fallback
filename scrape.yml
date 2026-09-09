@@ -1,0 +1,35 @@
+name: JS Scrape Fallback
+
+on:
+  repository_dispatch:
+    types: [scrape-request]
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Run JS-rendering scraper
+        run: |
+          python scrape.py \
+            --url "${{ github.event.client_payload.url }}" \
+            --county "${{ github.event.client_payload.county }}" \
+            --out result.json
+
+      - name: Send result back to n8n
+        run: |
+          curl -sS -X POST "${{ github.event.client_payload.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d @result.json
