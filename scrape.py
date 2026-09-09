@@ -11,7 +11,7 @@ from playwright.sync_api import sync_playwright
 FILE_EXT_RE = re.compile(r"\.(pdf|xls|xlsx|csv|doc|docx)(\?.*)?$", re.IGNORECASE)
 
 # Words that make a link a bad match even if it otherwise scores high
-BAD_WORDS = ["claim", "application", "exemption"]
+BAD_WORDS = ["claim", "application", "exemption", "request form", "request"]
 
 # Markers that indicate we're still looking at a Cloudflare (or similar) challenge page
 CHALLENGE_MARKERS = [
@@ -23,7 +23,7 @@ CHALLENGE_MARKERS = [
     "attention required! | cloudflare",
 ]
 
-# Domains n8n Cloud's server cannot reach itself (DNS/IP blocked at their end).
+# Domains n8n Cloud's own server cannot reach (DNS/IP blocked at their end).
 # ONLY for these, this script downloads the file itself and sends it back as
 # base64. For every other county, nothing changes — fileUrl is passed to n8n
 # exactly like before and n8n fetches it on its own.
@@ -90,8 +90,12 @@ def score_links(anchors):
             score += 10
         if "fund" in href_l or "fund" in text_l:
             score += 5
+        if "report" in href_l or "report" in text_l:
+            score += 8
+        if "list" in href_l or "list" in text_l:
+            score += 4
         if text_l == "here" or "here" in text_l:
-            score += 3
+            score += 1
         if any(bad in href_l or bad in text_l for bad in BAD_WORDS):
             score -= 20
 
