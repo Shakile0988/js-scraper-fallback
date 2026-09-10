@@ -209,15 +209,30 @@ def is_challenge_page(title, html):
 
 
 def wait_out_challenge(page, max_wait_ms=25000, poll_ms=1000):
+    """
+    Poll the page until any Cloudflare-style JS challenge clears, or time out.
+    Cloudflare challenge pages often auto-reload/navigate mid-poll, which can
+    destroy Playwright's execution context right as we call page.title()/
+    page.content(). That's expected on these sites, not a real failure — so
+    we swallow it and just retry on the next poll tick instead of crashing.
+    """
     waited = 0
     while waited < max_wait_ms:
-        title = page.title()
-        html = page.content()
+        try:
+            title = page.title()
+            html = page.content()
+        except Exception:
+            page.wait_for_timeout(poll_ms)
+            waited += poll_ms
+            continue
         if not is_challenge_page(title, html):
             return True, html
         page.wait_for_timeout(poll_ms)
         waited += poll_ms
-    return False, page.content()
+    try:
+        return False, page.content()
+    except Exception:
+        return False, ""
 
 
 def solve_with_flaresolverr(url, timeout_ms=60000):
